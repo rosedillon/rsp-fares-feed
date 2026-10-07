@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Feed extracts and cleaned output are large; fetch your own.
+RJFA*
+*.FFL
+*.LOC
+*.TTY
+
+.DS_Store
