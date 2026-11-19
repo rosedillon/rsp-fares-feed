@@ -212,6 +212,19 @@ thresholds are named constants in
 
 Every error is a subclass of `FaresFeedError`.
 
+## Related packages
+
+Part of a set of Python packages for Great Britain's open rail data:
+
+- [bplan-geography](https://github.com/rosedillon/bplan-geography), minimum running times from Network Rail's BPLAN extract
+- [cif-timetable](https://github.com/rosedillon/cif-timetable), calling points and trains per route from the Network Rail CIF timetable
+- [hsp-client](https://github.com/rosedillon/hsp-client), how late UK trains actually ran, from the National Rail HSP API
+- [rail-loading](https://github.com/rosedillon/rail-loading), UK train operators' passenger loading data in one schema
+- [tag-databook](https://github.com/rosedillon/tag-databook), DfT TAG Data Book appraisal values without opening Excel
+- [track-distance](https://github.com/rosedillon/track-distance), station distances along the rails, from Network Rail's track model
+- [rail-codes](https://github.com/rosedillon/rail-codes), TIPLOC, CRS, NLC and STANOX lookups from Network Rail's CORPUS
+- [orr-station-usage](https://github.com/rosedillon/orr-station-usage), entries and exits at every station by year, from ORR tables 1410 and 1415
+
 ## Development
 
 ```sh
