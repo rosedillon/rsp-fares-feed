@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from rsp_fares_feed import (
+    CLUSTERS_CSV,
     FLOW_CSV,
     LOCATIONS_CSV,
     TICKETS_CSV,
@@ -110,15 +111,16 @@ class TestParseTicketTypesFile:
 
 
 class TestCleanFeed:
-    def test_writes_three_csvs(self, cleaned: pathlib.Path) -> None:
-        for name in (FLOW_CSV, LOCATIONS_CSV, TICKETS_CSV):
+    def test_writes_the_csvs(self, cleaned: pathlib.Path) -> None:
+        for name in (FLOW_CSV, LOCATIONS_CSV, TICKETS_CSV, CLUSTERS_CSV):
             assert (cleaned / name).exists()
         assert cleaned_files_exist(cleaned)
 
     def test_counts_are_returned(self, raw_feed: pathlib.Path, tmp_path: pathlib.Path) -> None:
         counts = clean_feed(raw_feed, tmp_path / "out")
         assert counts["locations"] == 4
-        assert counts["tickets"] == 6
+        assert counts["tickets"] == 7
+        assert counts["clusters"] == 2
         assert counts["flow"] > 0
 
     def test_missing_cleaned_dir_is_detected(self, tmp_path: pathlib.Path) -> None:

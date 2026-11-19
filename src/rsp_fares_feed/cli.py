@@ -21,6 +21,7 @@ from rsp_fares_feed.table import (
     build_fares_table,
     lookup_pair,
     median_advance_fare,
+    median_fare,
     retail_only,
 )
 
@@ -70,8 +71,7 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
     fares = lookup_pair(table, args.origin, args.destination)
     if fares.empty:
         print(
-            f"No fares found for {args.origin.upper()} -> {args.destination.upper()}. "
-            "Fares set only at cluster level are not resolvable here (see the README).",
+            f"No fares found for {args.origin.upper()} -> {args.destination.upper()}.",
             file=sys.stderr,
         )
         return 0
@@ -96,6 +96,7 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
             {
                 "origin": args.origin.upper(),
                 "destination": args.destination.upper(),
+                "median_fare_gbp": median_fare(table, args.origin, args.destination),
                 "median_advance_gbp": median_advance_fare(table, args.origin, args.destination),
                 "fares": retail[DISPLAY_COLUMNS].to_dict(orient="records"),
             },
@@ -112,9 +113,12 @@ def _cmd_lookup(args: argparse.Namespace) -> int:
 
     print(f"{args.origin.upper()} -> {args.destination.upper()}")
     print(retail[DISPLAY_COLUMNS].to_string(index=False))
+    typical = median_fare(table, args.origin, args.destination)
+    if typical is not None:
+        print(f"\nMedian adult standard fare per journey: £{typical:.2f}")
     advance = median_advance_fare(table, args.origin, args.destination)
     if advance is not None:
-        print(f"\nMedian standard-class Advance: £{advance:.2f}")
+        print(f"Median standard-class Advance: £{advance:.2f}")
     return 0
 
 
@@ -147,7 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     clean = subparsers.add_parser(
         "clean",
         help="Parse an extracted feed into CSVs.",
-        description="Parse the .FFL, .LOC and .TTY files into three cleaned CSVs.",
+        description="Parse the .FFL, .LOC, .TTY and .FSC files into four cleaned CSVs.",
     )
     clean.add_argument("raw", type=pathlib.Path, help="directory of the extracted feed")
     clean.add_argument(

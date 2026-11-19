@@ -1,9 +1,12 @@
-"""Join the cleaned feed into a queryable fares table.
+"""Turn the cleaned feed into fares you can look up by station.
 
 The feed's own files are awkward to use. Flows address stations by NLC,
 fares address flows by ID, and ticket codes are three letters with no
-meaning on their own. This joins all three into one row per (origin
-CRS, destination CRS, ticket type, restriction) with a price.
+meaning on their own. About half the fares are set for a cluster or
+group of stations rather than one station, so a fare from Liverpool to
+Manchester may be filed under neither station's own code.
+:class:`FaresTable` keeps the fares by NLC and knows every code each
+station is priced under, and :func:`lookup_pair` searches all of them.
 
 It also flags fares that are not retail prices at all; see
 :func:`flag_non_retail`.
@@ -11,12 +14,14 @@ It also flags fares that are not retail prices at all; see
 
 from __future__ import annotations
 
+import collections
+import dataclasses
 import logging
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from rsp_fares_feed.records import FLOW_CSV, LOCATIONS_CSV, TICKETS_CSV
+from rsp_fares_feed.records import CLUSTERS_CSV, FLOW_CSV, LOCATIONS_CSV, TICKETS_CSV
 
 if TYPE_CHECKING:
     import pathlib
@@ -61,6 +66,23 @@ NON_RETAIL_FLAT_MAX_PENCE = 20
 ADVANCE_DESCRIPTION = "ADVANCE"
 STANDARD_CLASS = "2"
 
+# The ordinary adult products, matched on the start of the ticket
+# description. The feed carries hundreds of others on the same flows
+# (family, small group, child, "Kid with Adult" at £2, "SALE ADVANCE" at
+# £1, pay-as-you-go test entries), too many to exclude one by one.
+ADULT_PRODUCTS = (
+    "ADVANCE",
+    "ANYTIME",
+    "OFF-PEAK",
+    "SUPER OFFPEAK",
+    "SUP OFFPK",
+    "LUMOFIXED",
+    "SEMI FLEX",
+)
+
+# Below this a standard-class fare is a token, not a price anyone pays.
+MIN_RETAIL_FARE_GBP = 1.0
+
 
 def flag_non_retail(flow: pd.DataFrame) -> pd.Series:
     """Flag rows that are not real point-to-point retail prices.
@@ -90,83 +112,93 @@ def flag_non_retail(flow: pd.DataFrame) -> pd.Series:
     return sentinel | flow["ticket_code"].isin(flat_codes)
 
 
-def build_fares_table(cleaned_dir: pathlib.Path) -> pd.DataFrame:
-    """Join the three cleaned CSVs into one fares table.
+@dataclasses.dataclass
+class FaresTable:
+    """The cleaned feed, ready to query by station CRS.
 
-    The returned frame carries :data:`OUTPUT_COLUMNS` plus
-    ``direction``, which :func:`lookup_pair` needs to resolve reversible
-    flows.
+    ``fares`` has one row per fare, keyed by NLC: a station's own, a
+    cluster's or a group's. ``codes`` maps each CRS to every NLC it is
+    priced under, and ``names`` maps each CRS to its name.
+    """
+
+    fares: pd.DataFrame
+    codes: dict[str, frozenset[str]]
+    names: dict[str, str]
+
+
+def build_fares_table(cleaned_dir: pathlib.Path) -> FaresTable:
+    """Load the cleaned CSVs into a :class:`FaresTable`.
+
+    A folder cleaned by version 0.1, which has no clusters file, still
+    loads, but finds only fares set for single stations.
     """
     flow = pd.read_csv(cleaned_dir / FLOW_CSV, dtype=str)
     flow["fare_pence"] = pd.to_numeric(flow["fare_pence"], errors="coerce")
     flow["non_retail_fare"] = flag_non_retail(flow)
-
-    locations = pd.read_csv(cleaned_dir / LOCATIONS_CSV, dtype=str)
     tickets = pd.read_csv(cleaned_dir / TICKETS_CSV, dtype=str)
-
-    origins = locations.rename(
-        columns={
-            "nlc_code": "origin_code",
-            "crs_code": "origin",
-            "description": "origin_name",
-        }
-    )
-    destinations = locations.rename(
-        columns={
-            "nlc_code": "destination_code",
-            "crs_code": "destination",
-            "description": "destination_name",
-        }
-    )
-
-    table = flow.merge(origins, on="origin_code", how="inner")
-    table = table.merge(destinations, on="destination_code", how="inner")
-    table = table.merge(
+    flow = flow.merge(
         tickets.rename(columns={"description": "ticket_description"}),
         on="ticket_code",
         how="left",
     )
-    table["fare_gbp"] = table["fare_pence"] / 100
-    return table[[*OUTPUT_COLUMNS, "direction"]]
+    flow["fare_gbp"] = flow["fare_pence"] / 100
+
+    locations = pd.read_csv(cleaned_dir / LOCATIONS_CSV, dtype=str)
+    clusters_path = cleaned_dir / CLUSTERS_CSV
+    if clusters_path.exists():
+        clusters = pd.read_csv(clusters_path, dtype=str)
+    else:
+        logger.warning(
+            "No %s in %s; clean the feed again to find cluster fares",
+            CLUSTERS_CSV,
+            cleaned_dir,
+        )
+        clusters = pd.DataFrame(columns=["cluster_code", "nlc_code"])
+    member_of: dict[str, set[str]] = collections.defaultdict(set)
+    for cluster, member in zip(clusters["cluster_code"], clusters["nlc_code"], strict=True):
+        member_of[member].add(cluster)
+
+    codes: dict[str, set[str]] = collections.defaultdict(set)
+    for crs, nlc in zip(locations["crs_code"], locations["nlc_code"], strict=True):
+        # A group (London Terminals) can itself sit in a cluster.
+        groups = member_of.get(nlc, set())
+        codes[crs] |= {nlc, *groups, *(c for g in groups for c in member_of.get(g, ()))}
+    names = dict(zip(locations["crs_code"], locations["description"], strict=True))
+    return FaresTable(flow, {k: frozenset(v) for k, v in codes.items()}, names)
 
 
-def lookup_pair(table: pd.DataFrame, origin: str, destination: str) -> pd.DataFrame:
-    """Fares for one origin to destination pair, cheapest first.
+def lookup_pair(table: FaresTable, origin: str, destination: str) -> pd.DataFrame:
+    """Every fare from *origin* to *destination*, cheapest first.
 
-    A flow marked reversible (``direction == "R"``) also prices the
-    journey back the other way. Those rows are found and relabelled, so
-    the result always reads as *origin* to *destination* whichever way
-    round the underlying flow record was written.
+    A fare matches when it is set between any codes the two stations
+    are priced under: their own NLCs, their clusters or their groups. A
+    flow marked reversible (``direction == "R"``) also prices the
+    journey back, and the result always reads *origin* to *destination*.
     """
     origin = origin.strip().upper()
     destination = destination.strip().upper()
-
-    forward = table[(table["origin"] == origin) & (table["destination"] == destination)]
-
-    reverse = table[
-        (table["direction"] == "R")
-        & (table["origin"] == destination)
-        & (table["destination"] == origin)
-    ].copy()
-    if not reverse.empty:
-        # One rename() applies the whole mapping against the original
-        # labels at once, so swapping both ways round in a single call
-        # is safe.
-        reverse = reverse.rename(
-            columns={
-                "origin": "destination",
-                "destination": "origin",
-                "origin_name": "destination_name",
-                "destination_name": "origin_name",
-            }
-        )
-
-    matches = pd.concat([forward, reverse], ignore_index=True)
-    matches = matches.drop_duplicates(subset=["ticket_code", "restriction_code", "fare_pence"])
+    fares = table.fares
+    o = table.codes.get(origin, frozenset())
+    d = table.codes.get(destination, frozenset())
+    forward = fares["origin_code"].isin(o) & fares["destination_code"].isin(d)
+    reverse = (
+        (fares["direction"] == "R")
+        & fares["origin_code"].isin(d)
+        & fares["destination_code"].isin(o)
+    )
+    matches = fares[forward | reverse].assign(
+        origin=origin,
+        destination=destination,
+        origin_name=table.names.get(origin),
+        destination_name=table.names.get(destination),
+    )
+    matches = matches.drop_duplicates(
+        subset=["ticket_code", "restriction_code", "fare_pence", "route_code"]
+    )
     return matches[OUTPUT_COLUMNS].sort_values("fare_pence").reset_index(drop=True)
 
 
-def median_advance_fare(table: pd.DataFrame, origin: str, destination: str) -> float | None:
+def median_advance_fare(table: FaresTable, origin: str, destination: str) -> float | None:
     """Median standard-class adult Advance fare for a pair, in pounds.
 
     There is no single Advance price. The feed publishes each rung of an
@@ -174,19 +206,14 @@ def median_advance_fare(table: pd.DataFrame, origin: str, destination: str) -> f
     ``V2A`` to ``V2Z`` and ``USA`` to ``USZ`` are one product at
     different prices, and what a passenger pays depends on how far ahead
     they book and what is left. The median across the published ladder
-    is a reasonable stand-in for the expected price in revenue work.
+    is a fair stand-in for the expected price in revenue work.
 
-    Restricted to standard-class retail fares described exactly as
-    ``ADVANCE``: first class (``ADVANCE 1ST``), standard premium
-    (``ADVANCE STDPREM``) and the non-retail placeholders are excluded,
-    so this is the ordinary adult Advance single.
-
-    Returns ``None`` if the pair has no such fare.
+    Only standard-class retail fares described exactly as ``ADVANCE``
+    count, so first class (``ADVANCE 1ST``), Standard Premium
+    (``ADVANCE STDPREM``) and the placeholders are left out. Returns
+    ``None`` if the pair has no such fare.
     """
     fares = lookup_pair(table, origin, destination)
-    if fares.empty:
-        return None
-
     description = fares["ticket_description"].astype(str).str.strip().str.upper()
     ticket_class = fares["tkt_class"].astype(str).str.strip()
     advance = fares[
@@ -197,6 +224,31 @@ def median_advance_fare(table: pd.DataFrame, origin: str, destination: str) -> f
     if advance.empty:
         return None
     return float(advance["fare_gbp"].median())
+
+
+def median_fare(table: FaresTable, origin: str, destination: str) -> float | None:
+    """Median adult standard fare per journey for a pair, in pounds.
+
+    The feed has no sales figures, so each ordinary product
+    (:data:`ADULT_PRODUCTS`: the Advance rungs, Anytime, Off-Peak and
+    Super Off-Peak) counts once. Singles count at face value and
+    returns at half. Seasons, first class, Standard Premium, the
+    placeholder prices and anything under :data:`MIN_RETAIL_FARE_GBP`
+    are left out, and the median takes care of what is left in the
+    tails. Returns ``None`` if the pair has no such fare.
+    """
+    fares = lookup_pair(table, origin, destination)
+    description = fares["ticket_description"].fillna("").str.strip().str.upper()
+    retail = fares[
+        (fares["tkt_class"].astype(str).str.strip() == STANDARD_CLASS)
+        & fares["tkt_type"].isin(("S", "R"))
+        & ~fares["non_retail_fare"].astype(bool)
+        & description.str.startswith(ADULT_PRODUCTS)
+        & ~description.str.contains("STDPREM")
+    ]
+    per_journey = retail["fare_gbp"].where(retail["tkt_type"] == "S", retail["fare_gbp"] / 2)
+    per_journey = per_journey[per_journey >= MIN_RETAIL_FARE_GBP]
+    return float(per_journey.median()) if not per_journey.empty else None
 
 
 def retail_only(fares: pd.DataFrame) -> pd.DataFrame:

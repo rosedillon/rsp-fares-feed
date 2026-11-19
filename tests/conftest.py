@@ -128,6 +128,13 @@ def ticket_record(
 LIVERPOOL_NLC = "1444"
 MANCHESTER_NLC = "2968"
 LEEDS_NLC = "8446"
+MANCHESTER_CLUSTER = "Q814"
+LEEDS_GROUP = "1072"
+
+
+def group_member_record(group_nlc: str, member_nlc: str) -> str:
+    """A ``.LOC`` group member line; codes are 7-digit UICs."""
+    return f"RM70{group_nlc}0{' ' * 8}70{member_nlc}0"
 
 
 @pytest.fixture
@@ -151,6 +158,12 @@ def raw_feed(tmp_path: pathlib.Path) -> pathlib.Path:
         fare_record("0000001", "XXX", 500, update_marker="D"),
         # A fare whose flow does not exist: dropped by the inner join.
         fare_record("9999999", "SOS", 700),
+        # Fares set for Manchester's cluster and for a group holding
+        # Leeds, not for either station itself.
+        flow_record("0000004", LIVERPOOL_NLC, MANCHESTER_CLUSTER),
+        fare_record("0000004", "OPS", 1_100),
+        flow_record("0000005", LIVERPOOL_NLC, LEEDS_GROUP),
+        fare_record("0000005", "OPS", 2_000),
     ]
     # A settlement token: flat, low, and on many routes.
     for index in range(25):
@@ -171,6 +184,7 @@ def raw_feed(tmp_path: pathlib.Path) -> pathlib.Path:
         # A Travelcard zone: an NLC with no CRS, which is not a station.
         location_record("0027", "", "TRVCARD 1"),
         location_record("9999", "ZZZ", "DELETED STN", update_marker="D"),
+        group_member_record(LEEDS_GROUP, LEEDS_NLC),
     ]
     (directory / "RJFAF001.LOC").write_text("\n".join(location_lines) + "\n", encoding="latin-1")
 
@@ -182,8 +196,13 @@ def raw_feed(tmp_path: pathlib.Path) -> pathlib.Path:
         ticket_record("GRP", "GROUPSAVE"),
         ticket_record("TKN", "INCLUSIVE TOUR"),
         ticket_record("ADV", "ADVANCE"),
+        ticket_record("OPS", "OFF-PEAK SINGLE"),
         ticket_record("AD1", "ADVANCE 1ST", tkt_class="1"),
     ]
+    (directory / "RJFAF001.FSC").write_text(
+        f"/!! Start of file\nR{MANCHESTER_CLUSTER}{MANCHESTER_NLC}3112299901012020\n",
+        encoding="latin-1",
+    )
     (directory / "RJFAF001.TTY").write_text("\n".join(ticket_lines) + "\n", encoding="latin-1")
 
     return directory

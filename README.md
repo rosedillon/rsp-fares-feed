@@ -1,5 +1,10 @@
 # rsp-fares-feed
 
+[![PyPI](https://img.shields.io/pypi/v/rsp-fares-feed)](https://pypi.org/project/rsp-fares-feed/)
+[![Python](https://img.shields.io/pypi/pyversions/rsp-fares-feed)](https://pypi.org/project/rsp-fares-feed/)
+[![CI](https://github.com/rosedillon/rsp-fares-feed/actions/workflows/ci.yml/badge.svg)](https://github.com/rosedillon/rsp-fares-feed/actions/workflows/ci.yml)
+[![Licence: GPL-3.0](https://img.shields.io/badge/licence-GPL--3.0-blue)](https://github.com/rosedillon/rsp-fares-feed/blob/main/LICENSE)
+
 Parse the RSP Fares and Associated Data Feed, every permanent rail fare
 published in Great Britain, into a table you can query.
 
@@ -9,6 +14,9 @@ and no headers, where each field is identified by its character
 position in a PDF specification. Prices are in pence, stations are NLC
 numbers, ticket types are three-letter codes, and about 7.6 million
 fares are spread across two record types that have to be joined by ID.
+Many fares are not even filed under a station: they belong to a
+cluster or a group of stations, so looking up the two stations' own
+codes misses them.
 
 ```python
 from pathlib import Path
@@ -24,7 +32,7 @@ lookup_pair(table, "LIV", "MAN")
 Python 3.11 or later.
 
 ```sh
-pip install git+https://github.com/rosedillon/rsp-fares-feed
+pip install rsp-fares-feed
 ```
 
 or, from a clone, `pip install .`. It depends on pandas. HTTP goes
@@ -56,9 +64,10 @@ Cleaning the national feed gives:
 
 ```console
 $ rsp-fares-feed clean fares-raw -o fares
-flow         7,612,617
-locations        3,449
-tickets          3,448
+flow        7,612,617
+locations       3,449
+tickets         3,448
+clusters       44,946
 ```
 
 ## Looking up fares
@@ -73,15 +82,33 @@ ticket_code ticket_description  fare_gbp restriction_code toc route_code
         NAP    FOR TEST USE ON       2.3               NT NTH      00429
         DG0            ADVANCE       2.7               NT NTH      00429
         DG1            ADVANCE       3.2               NT NTH      00429
+        2AS            ADVANCE       3.7               AS SMA      00472
 ...
-        NLY            ADVANCE      20.1               AE RWB      00216
-        NMY            ADVANCE      21.5               AE RWB      00216
+        7DF    SEVEN DAY   1ST     133.0              NaN TPE      00000
+        FL1       Flexi Season     139.7              NaN NTH      00083
+        FL1       Flexi Season     172.9              NaN TPE      00000
 
-Median standard-class Advance: £10.10
+Median adult standard fare per journey: £9.47
+Median standard-class Advance: £7.40
 ```
 
-The real output has 27 fares; the middle is cut here. Add `--json` for
-machine-readable output, or `--csv out.csv` to write a file.
+The real output has 178 retail fares; the middle is cut here. Add
+`--json` for machine-readable output, or `--csv out.csv` to write a
+file.
+
+## Cluster and group fares
+
+A fare can be set for a cluster of stations (an NLC such as `Q814`) or
+a group (`1072`, LONDON TERMINALS) instead of a single station. The
+`.FSC` file lists the clusters, and the `.LOC` file's member records
+list the groups. `build_fares_table` works out every code each station
+is priced under, and `lookup_pair` searches all of them.
+
+It makes a large difference. Looking up only the stations' own codes
+finds 27 fares from Liverpool Lime Street to Manchester. With clusters
+and groups there are 192, and the 105 TransPennine Express fares among
+them are all set at cluster level. Euston to Manchester goes from 180
+to 1,302.
 
 ## Two things the feed does not make obvious
 
@@ -99,12 +126,20 @@ It only counts standard class retail fares described exactly as
 (`ADVANCE STDPREM`) are left out:
 
 ```python
-median_advance_fare(table, "LIV", "MAN")  # 10.10
-median_advance_fare(table, "LDS", "YRK")  # 7.70
+median_advance_fare(table, "LIV", "MAN")  # 7.40
+median_advance_fare(table, "LDS", "YRK")  # 9.70
 ```
 
 It is a stand-in for the expected price in revenue work, not a quoted
-price.
+price. `median_fare()` is broader. It counts each ordinary adult
+product once (the Advance rungs, Anytime, Off-Peak and Super Off-Peak),
+singles at face value and returns at half, and leaves out seasons,
+first class and placeholders:
+
+```python
+median_fare(table, "LIV", "MAN")  # 9.475
+median_fare(table, "EUS", "MAN")  # 68.60
+```
 
 ### Many "fares" are not prices
 
@@ -126,18 +161,18 @@ retail_only(lookup_pair(table, "LIV", "MAN"))
 ```
 
 The CLI hides them by default and says how many it hid. Between London
-Euston and Manchester more than a third of the published fares are not
-prices anyone can buy:
+Euston and Manchester, 73 of the 1,302 published fares are not prices
+anyone can buy:
 
 ```console
 $ rsp-fares-feed lookup EUS MAN -d fares
-note: 65 of 178 fare(s) are non-retail placeholders (group, tour operator, settlement
+note: 73 of 1302 fare(s) are non-retail placeholders (group, tour operator, settlement
 tokens) and are hidden; pass --include-non-retail to show them.
 ```
 
 Both patterns were checked against the full national feed. The
 thresholds are named constants in
-[`table.py`](src/rsp_fares_feed/table.py) if you want to change them.
+[`table.py`](https://github.com/rosedillon/rsp-fares-feed/blob/main/src/rsp_fares_feed/table.py) if you want to change them.
 
 ## Limitations
 
@@ -145,12 +180,9 @@ thresholds are named constants in
   the permanent fares. What is on sale for a given day is in each
   operator's own retail system, so nothing here can price an exact
   journey on an exact date.
-- Cluster fares are not resolved. A fare can be set against a cluster
-  NLC covering several stations, such as a group of London terminals,
-  instead of one station. Fares are joined on a station's own NLC only,
-  so a station whose fares are published only for its cluster returns
-  nothing. Resolving those needs the separate Station Clusters file,
-  which is not read.
+- A folder cleaned with version 0.1 has no clusters file. It still
+  loads, with a warning, but finds only fares set for single stations.
+  Run `clean` again to fix it.
 - Routeing is not interpreted. `route_code` is reported as published;
   whether a ticket is valid on a particular train is a question for the
   National Routeing Guide.
@@ -169,10 +201,12 @@ thresholds are named constants in
 | Name | |
 |---|---|
 | `fetch_feed(dest)` | log in to NRDP, download the feed and extract it |
-| `clean_feed(raw, out)` | parse `.FFL`, `.LOC` and `.TTY` into three CSVs |
-| `build_fares_table(dir)` | join them into one row per fare |
-| `lookup_pair(table, o, d)` | fares for a pair, cheapest first, reversible flows included |
+| `clean_feed(raw, out)` | parse `.FFL`, `.LOC`, `.TTY` and `.FSC` into four CSVs |
+| `build_fares_table(dir)` | load them into a `FaresTable` |
+| `lookup_pair(table, o, d)` | fares for a pair, cheapest first, with cluster, group and reversible fares |
+| `median_fare(table, o, d)` | median adult standard fare per journey, in pounds |
 | `median_advance_fare(table, o, d)` | median standard class Advance fare, in pounds |
+| `parse_clusters(raw)` | every (cluster or group, member) pair in the feed |
 | `flag_non_retail(flow)` | a boolean Series marking placeholder and settlement prices |
 | `retail_only(fares)` | drop the flagged rows |
 
@@ -196,7 +230,7 @@ network or credentials. No licensed data is committed.
 
 ## Licence
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0. See [LICENSE](https://github.com/rosedillon/rsp-fares-feed/blob/main/LICENSE).
 
 Not affiliated with or endorsed by the Rail Delivery Group, Rail
 Settlement Plan or National Rail.

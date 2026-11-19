@@ -65,7 +65,8 @@ class TestLookup:
         assert cli.main(["lookup", "LIV", "MAN", "-d", str(cleaned), "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["origin"] == "LIV"
-        assert {fare["ticket_code"] for fare in payload["fares"]} == {"SOS", "SOR"}
+        assert {fare["ticket_code"] for fare in payload["fares"]} == {"SOS", "SOR", "OPS"}
+        assert payload["median_fare_gbp"] == 11.0
 
     def test_csv_output(
         self, cleaned: pathlib.Path, tmp_path: pathlib.Path, capsys: CaptureFixture[str]
@@ -80,11 +81,9 @@ class TestLookup:
         assert cli.main(["lookup", "LIV", "MAN", "-d", str(advance_feed)]) == 0
         assert "Median standard-class Advance: £15.00" in capsys.readouterr().out
 
-    def test_unknown_pair_explains_clusters(
-        self, cleaned: pathlib.Path, capsys: CaptureFixture[str]
-    ) -> None:
+    def test_unknown_pair(self, cleaned: pathlib.Path, capsys: CaptureFixture[str]) -> None:
         assert cli.main(["lookup", "AAA", "BBB", "-d", str(cleaned)]) == 0
-        assert "cluster level" in capsys.readouterr().err
+        assert "No fares found" in capsys.readouterr().err
 
     def test_uncleaned_directory(
         self, tmp_path: pathlib.Path, capsys: CaptureFixture[str]

@@ -24,12 +24,14 @@ from rsp_fares_feed.errors import (
     MissingCredentialsError,
 )
 from rsp_fares_feed.records import (
+    CLUSTERS_CSV,
     FLOW_CSV,
     LOCATIONS_CSV,
     TICKETS_CSV,
     clean_feed,
     cleaned_files_exist,
     find_feed_file,
+    parse_clusters,
     parse_flow_file,
     parse_locations_file,
     parse_ticket_types_file,
@@ -37,14 +39,17 @@ from rsp_fares_feed.records import (
 from rsp_fares_feed.table import (
     NON_RETAIL_SENTINEL_PENCE,
     OUTPUT_COLUMNS,
+    FaresTable,
     build_fares_table,
     flag_non_retail,
     lookup_pair,
     median_advance_fare,
+    median_fare,
     retail_only,
 )
 
 __all__ = [
+    "CLUSTERS_CSV",
     "FLOW_CSV",
     "LOCATIONS_CSV",
     "NON_RETAIL_SENTINEL_PENCE",
@@ -53,6 +58,7 @@ __all__ = [
     "AuthenticationError",
     "DownloadError",
     "FaresFeedError",
+    "FaresTable",
     "FeedFileMissingError",
     "MissingCredentialsError",
     "authenticate",
@@ -64,6 +70,8 @@ __all__ = [
     "flag_non_retail",
     "lookup_pair",
     "median_advance_fare",
+    "median_fare",
+    "parse_clusters",
     "parse_flow_file",
     "parse_locations_file",
     "parse_ticket_types_file",
@@ -71,4 +79,4 @@ __all__ = [
     "retail_only",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

@@ -8,7 +8,7 @@ the interface specification, RSPS5045 ("Fares and Associated Data Feed
 Interface Specification"). Its 1-indexed inclusive "Position" column
 becomes a 0-indexed Python slice here.
 
-Three of the feed's two dozen files are read:
+Four of the feed's two dozen files are read:
 
 ``.FFL``
     Flow and Fare records. A Flow record (``RF``) describes a route
@@ -17,7 +17,13 @@ Three of the feed's two dozen files are read:
     per route.
 ``.LOC``
     Location records (``RL``): the NLC to CRS and name lookup that turns
-    a flow's numeric codes into station codes.
+    a flow's numeric codes into station codes. Its group member records
+    (``RM``) say which stations belong to a group such as LONDON
+    TERMINALS.
+``.FSC``
+    Station clusters: which stations share a cluster NLC such as
+    ``Q814``. About half the feed's fares are set for a cluster or a
+    group rather than a single station.
 ``.TTY``
     Ticket type records: what ``SOS``, ``PAP`` and the rest mean.
 
@@ -103,6 +109,7 @@ TICKET_COLUMNS = ["ticket_code", "description", "tkt_class", "tkt_type", "tkt_gr
 FLOW_CSV = "fares_flow.csv"
 LOCATIONS_CSV = "fares_locations.csv"
 TICKETS_CSV = "fares_tickets.csv"
+CLUSTERS_CSV = "fares_clusters.csv"
 
 
 def _fields(line: str, spec: dict[str, tuple[int, int]]) -> dict[str, str]:
@@ -119,7 +126,8 @@ def find_feed_file(directory: pathlib.Path, suffix: str) -> pathlib.Path:
     The feed names its files by sequence number (``RJFAF882.FFL``), so
     they are found by extension rather than by name.
     """
-    matches = sorted(directory.glob(f"*{suffix}"))
+    # macOS leaves ._ files beside the real ones on external drives.
+    matches = sorted(p for p in directory.glob(f"*{suffix}") if not p.name.startswith("._"))
     if not matches:
         raise FeedFileMissingError(suffix, directory)
     if len(matches) > 1:
@@ -204,8 +212,37 @@ def parse_ticket_types_file(path: pathlib.Path) -> pd.DataFrame:
     return pd.DataFrame(rows)[TICKET_COLUMNS].drop_duplicates("ticket_code")
 
 
+def parse_clusters(raw_dir: pathlib.Path) -> pd.DataFrame:
+    """Every (cluster or group NLC, member NLC) pair in the feed.
+
+    Clusters come from the ``.FSC`` file: update marker, cluster NLC,
+    member NLC, then validity dates. Groups such as LONDON TERMINALS
+    come from the ``.LOC`` file's ``M`` records, whose 7-digit UIC
+    member codes carry the NLC in digits 3 to 6. A feed without an
+    ``.FSC`` file gives groups only.
+    """
+    rows: list[tuple[str, str]] = []
+    clusters = sorted(p for p in raw_dir.glob("*.FSC") if not p.name.startswith("._"))
+    if clusters:
+        with clusters[0].open(encoding="latin-1") as handle:
+            rows += [
+                (line[1:5], line[5:9])
+                for line in handle
+                if not _is_comment(line) and line[:1] != DELETE_MARKER
+            ]
+    else:
+        logger.warning("No .FSC file in %s; cluster fares will not be found", raw_dir)
+    with find_feed_file(raw_dir, ".LOC").open(encoding="latin-1") as handle:
+        rows += [
+            (line[4:8], line[19:23])
+            for line in handle
+            if line[1:2] == "M" and line[:1] != DELETE_MARKER
+        ]
+    return pd.DataFrame(rows, columns=["cluster_code", "nlc_code"]).drop_duplicates()
+
+
 def clean_feed(raw_dir: pathlib.Path, output_dir: pathlib.Path) -> dict[str, int]:
-    """Parse an extracted feed and write the three cleaned CSVs.
+    """Parse an extracted feed and write the four cleaned CSVs.
 
     Returns the row count written for each.
     """
@@ -223,11 +260,20 @@ def clean_feed(raw_dir: pathlib.Path, output_dir: pathlib.Path) -> dict[str, int
     tickets = parse_ticket_types_file(find_feed_file(raw_dir, ".TTY"))
     tickets.to_csv(output_dir / TICKETS_CSV, index=False)
 
-    counts = {"flow": len(flow), "locations": len(locations), "tickets": len(tickets)}
+    logger.info("Parsing station clusters and groups")
+    clusters = parse_clusters(raw_dir)
+    clusters.to_csv(output_dir / CLUSTERS_CSV, index=False)
+
+    counts = {
+        "flow": len(flow),
+        "locations": len(locations),
+        "tickets": len(tickets),
+        "clusters": len(clusters),
+    }
     logger.info("Cleaned fares feed: %s", ", ".join(f"{k}={v:,}" for k, v in counts.items()))
     return counts
 
 
 def cleaned_files_exist(directory: pathlib.Path) -> bool:
-    """Whether *directory* already holds all three cleaned CSVs."""
+    """Whether *directory* holds a cleaned feed."""
     return all((directory / name).exists() for name in (FLOW_CSV, LOCATIONS_CSV, TICKETS_CSV))
